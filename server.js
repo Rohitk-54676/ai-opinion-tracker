@@ -13,6 +13,19 @@ app.use(express.static(path.join(__dirname, "public")));
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const MODEL = "meta-llama/llama-3-8b-instruct";
 
+// ── Clean markdown formatting from AI response ────────────────────────────────
+function cleanMarkdown(text) {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, "$1")   // remove **bold**
+    .replace(/\*(.*?)\*/g, "$1")       // remove *italic*
+    .replace(/#{1,6}\s/g, "")          // remove headings
+    .replace(/`{1,3}[^`]*`{1,3}/g, "") // remove code blocks
+    .replace(/^\s*[-•]\s/gm, "• ")     // normalize bullets
+    .replace(/\n{3,}/g, "\n\n")        // max 2 newlines
+    .trim();
+}
+
+// ── Call OpenRouter AI ────────────────────────────────────────────────────────
 async function callAI(messages, temperature = 0.3) {
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -40,20 +53,17 @@ async function callAI(messages, temperature = 0.3) {
   return data.choices[0].message.content;
 }
 
+// ── Extract JSON safely ───────────────────────────────────────────────────────
 function extractJSON(text) {
   try {
     return JSON.parse(text);
   } catch (e) {}
 
-  const match = text.match(/\{[\s\S]*/); // grab from first {
+  const match = text.match(/\{[\s\S]*/);
   if (!match) throw new Error("No JSON found");
 
   let json = match[0];
-
-  // 🔥 FIX: auto-close missing bracket
-  if (!json.trim().endsWith("}")) {
-    json = json + "}";
-  }
+  if (!json.trim().endsWith("}")) json = json + "}";
 
   try {
     return JSON.parse(json);
@@ -61,7 +71,6 @@ function extractJSON(text) {
     throw new Error("Still invalid JSON:\n" + json);
   }
 }
-
 
 // ── Analyze endpoint ──────────────────────────────────────────────────────────
 app.post("/api/analyze", async (req, res) => {
@@ -97,7 +106,6 @@ ${text}
 
   try {
     const raw = await callAI([{ role: "user", content: prompt }]);
-
     const result = extractJSON(raw);
     res.json({ success: true, result });
   } catch (err) {
@@ -152,18 +160,35 @@ app.post("/api/chat", async (req, res) => {
   if (!messages || !Array.isArray(messages))
     return res.status(400).json({ error: "Messages array required." });
 
-  const systemPrompt = `You are OpinionBot, an AI assistant specialized in public opinion analysis, sentiment trends, and social insights. You help users understand opinions, sentiment patterns, and public discourse.
+  const systemPrompt = `You are OpinionBot, a focused AI assistant that ONLY discusses topics related to:
+- Public opinion analysis
+- Sentiment analysis and sentiment trends
+- Social discourse and public perception
+- Opinion polling and survey insights
+- Brand reputation and public image
+- Political, social, or market sentiment
+- Emotional trends in news, social media, or public statements
 
-${context ? `Current analysis context:\n${context}\n` : ""}
+STRICT RULES you must always follow:
+// 1. If the user asks about ANYTHING outside the above scope (cooking, travel, coding, sports tips, general knowledge, recipes, directions, etc.), you MUST politely decline and redirect. Example: "I'm only able to help with public opinion and sentiment analysis topics. Ask me about sentiment, opinions, or public discourse!"
+2. NEVER use markdown formatting. No **bold**, no *italic*, no # headings, no bullet dashes (-), no backticks. Write in plain natural sentences only.
+3. Use "•" for bullet points only when listing multiple items, not dashes or asterisks.
+4. Keep responses concise — 2 to 4 sentences maximum unless listing items.
+5. Be conversational and friendly. One emoji per response maximum.
+6. Never give generic advice unrelated to opinion/sentiment analysis.
 
-Keep responses concise (2-4 sentences max), insightful, and conversational. Use emojis sparingly for friendliness.`;
+${context ? `Current analysis context:\n${context}\n` : ""}`;
 
   try {
     const raw = await callAI(
       [{ role: "system", content: systemPrompt }, ...messages],
       0.7
     );
-    res.json({ success: true, reply: raw.trim() });
+
+    // Clean any residual markdown the model sneaks in
+    const clean = cleanMarkdown(raw);
+
+    res.json({ success: true, reply: clean });
   } catch (err) {
     console.error("Chat error:", err.message);
     res.status(500).json({ error: err.message });
@@ -208,6 +233,7 @@ ${opinions.map((o, i) => `${i + 1}. "${o}"`).join("\n")}`;
   }
 });
 
+// ── Serve frontend ────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
